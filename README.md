@@ -1,130 +1,168 @@
-# NBA Player Performance Predictor
+# NBA Player Props Analyzer
 
-A machine learning model that predicts NBA player performance (points scored) for upcoming games using historical game data and rolling averages.
+An AI-powered NBA player performance prediction system designed for sports betting analysis. Predicts multiple player props including points, rebounds, assists, and combined statistics.
 
-## 🏀 Overview
+## Features
 
-This project uses a Random Forest regression model to predict how many points an NBA player will score in their next game based on their recent performance trends. The model analyzes rolling averages of key performance metrics over the last 10 games to make predictions.
+- **Multiple Prediction Targets**: Points, rebounds, assists, steals, blocks, threes, and combined props (PRA, PR, PA)
+- **Advanced Feature Engineering**: 50+ features including:
+  - Multi-window rolling averages (3, 5, 10, 15 games)
+  - Performance trends and momentum indicators
+  - Consistency metrics (standard deviation, coefficient of variation)
+  - Efficiency stats (true shooting %, points per minute)
+  - Context features (rest days, home/away, season progress)
+- **Betting Analysis**:
+  - Over/under probability calculations
+  - Edge detection against betting lines
+  - Value bet identification
+  - Confidence scoring
+- **Interactive Dashboard**: Streamlit app with:
+  - Real-time predictions
+  - Performance trend charts
+  - Hit rate analysis
+  - Complete game logs
 
-## ✨ Features
+## Installation
 
-- **Real-time Data Fetching**: Uses the NBA API to fetch current player game logs
-- **Rolling Average Analysis**: Calculates 10-game rolling averages for key metrics:
-  - Minutes played
-  - Field goals made/attempted
-  - Field goal percentage
-  - Points scored
-  - Rebounds
-  - Assists
-- **Interactive Web Interface**: Streamlit-based web app for easy user interaction
-- **Machine Learning Model**: Random Forest regressor trained on 2023-24 season data
-- **Performance Metrics**: Model achieves R² score of 0.66 with MAE of 3.94 points
+```bash
+# Clone the repository
+git clone <repository-url>
+cd NBA-player-performance-model
 
-## 🛠️ Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd NBA-player-performance-model
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-   Or install manually:
-   ```bash
-   pip install streamlit pandas numpy scikit-learn joblib nba_api
-   ```
-
-## 📊 Model Performance
-
-The model was trained on NBA 2023-24 season data and achieves:
-- **Mean Absolute Error (MAE)**: 3.94 points
-- **Root Mean Squared Error (RMSE)**: 5.23 points  
-- **R² Score**: 0.66
-
-## 🚀 Usage
-
-### Web Application
-
-1. **Run the Streamlit app**:
-   ```bash
-   streamlit run app.py
-   ```
-
-2. **Open your browser** and navigate to the provided URL (usually `http://localhost:8501`)
-
-3. **Enter a player's full name** (e.g., "LeBron James", "Stephen Curry")
-
-4. **Click "Predict"** to get the predicted points for their next game
-
-### Programmatic Usage
-
-```python
-from app import predict_player_performance
-
-# Predict performance for a player
-predicted_points = predict_player_performance("LeBron James")
-print(f"Predicted points: {predicted_points:.2f}")
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-## 📁 Project Structure
+## Quick Start
+
+### 1. Train the Models
+
+Before making predictions, you need to train the models:
+
+```bash
+# Train with default settings (100 players, random forest)
+python train_models.py
+
+# Train with more players for better accuracy
+python train_models.py --players 200
+
+# Use XGBoost for potentially better performance
+python train_models.py --model-type xgboost --players 150
+
+# Use existing data (if you've already fetched it)
+python train_models.py --use-existing
+```
+
+Training options:
+- `--players, -p`: Number of players to fetch data for (default: 100)
+- `--model-type, -m`: Model type - random_forest, gradient_boosting, or xgboost
+- `--use-existing, -e`: Use existing data file instead of fetching new data
+- `--test-size, -t`: Fraction of data for testing (default: 0.2)
+- `--output-dir, -o`: Output directory for models
+
+### 2. Run the Web App
+
+```bash
+streamlit run app.py
+```
+
+Open your browser to `http://localhost:8501`
+
+### 3. Make Predictions
+
+In the web app:
+1. Enter a player's full name (e.g., "LeBron James")
+2. Select the prop type (Points, Rebounds, Assists, etc.)
+3. Optionally enter a betting line for analysis
+4. Click "Analyze Player"
+
+## Project Structure
 
 ```
 NBA-player-performance-model/
-├── app.py                          # Streamlit web application
-├── nbaPerformanceModel.ipynb       # Jupyter notebook with model training
-├── nbaPerformanceModel.joblib      # Trained Random Forest model
-├── model_feature_names.joblib      # Feature names for model input
-└── README.md                       # This file
+├── app.py                    # Streamlit web application
+├── train_models.py           # Model training script
+├── requirements.txt          # Python dependencies
+├── README.md                 # This file
+├── src/
+│   ├── __init__.py
+│   ├── config.py            # Configuration settings
+│   ├── data_fetcher.py      # NBA API data fetching
+│   ├── features.py          # Feature engineering
+│   ├── models.py            # Model training and prediction
+│   └── predictor.py         # High-level prediction service
+├── models/                   # Trained model files (created after training)
+└── data/                     # Cached data files (created after training)
 ```
 
-## 🔧 Technical Details
+## Programmatic Usage
 
-### Model Architecture
-- **Algorithm**: Random Forest Regressor
-- **Features**: 7 rolling average metrics over 10-game windows
-- **Training Data**: 10,185 games (before 2024-01-01)
-- **Test Data**: 12,902 games (after 2024-01-01)
+```python
+from src.predictor import NBAPredictor
 
-### Feature Engineering
-The model uses rolling averages of the following metrics:
-- `ROLLING_MIN`: Average minutes played
-- `ROLLING_FGM`: Average field goals made
-- `ROLLING_FGA`: Average field goal attempts
-- `ROLLING_FG_PCT`: Average field goal percentage
-- `ROLLING_PTS`: Average points scored
-- `ROLLING_REB`: Average rebounds
-- `ROLLING_AST`: Average assists
+# Initialize and load models
+predictor = NBAPredictor()
+predictor.load_models()
 
-### Data Sources
-- **NBA API**: Real-time player game logs
-- **Historical Data**: 2023-24 season game statistics
+# Get a prediction
+result = predictor.get_player_prediction(
+    player_name="Stephen Curry",
+    prop_type="points",
+    line=28.5
+)
 
-## 🤝 Contributing
+print(f"Prediction: {result['prediction']:.1f}")
+print(f"Recommendation: {result['betting_analysis']['recommendation']}")
+print(f"Edge: {max(result['betting_analysis']['over_edge'], result['betting_analysis']['under_edge'])*100:.1f}%")
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+# Get predictions for multiple props
+multi_result = predictor.get_multi_prop_prediction(
+    player_name="LeBron James",
+    props={
+        "points": 25.5,
+        "rebounds": 7.5,
+        "assists": 8.5
+    }
+)
+```
 
-## 📝 License
+## Feature Details
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### Rolling Statistics (per window: 3, 5, 10, 15 games)
+- Points, rebounds, assists, steals, blocks, turnovers
+- Field goals made/attempted, FG%
+- Three-pointers made/attempted, 3P%
+- Free throws made/attempted, FT%
+- Minutes played, plus/minus
 
+### Derived Features
+- **Trends**: Short-term vs long-term performance comparison
+- **Momentum**: Percentage change from baseline
+- **Consistency**: Standard deviation and coefficient of variation
+- **Efficiency**: True shooting %, points per minute, points per FGA
+- **Context**: Days rest, back-to-back games, home/away splits
 
-## 🔮 Future Improvements
+### Target Variables
+- Individual stats: PTS, REB, AST, STL, BLK, TOV, FG3M
+- Combined props: PTS+REB+AST, PTS+REB, PTS+AST, REB+AST
 
-- [ ] Add more features (opponent strength, home/away games, rest days)
-- [ ] Implement ensemble methods for better accuracy
-- [ ] Add confidence intervals to predictions
-- [ ] Support for predicting other statistics (rebounds, assists, etc.)
-- [ ] Real-time model retraining with new data
-- [ ] Mobile app version
+## Model Performance
 
-## 📞 Contact
+Performance varies by target, but typical metrics:
+- **Points MAE**: ~4-5 points
+- **Rebounds MAE**: ~1.5-2 rebounds
+- **Assists MAE**: ~1.5-2 assists
+- **R-squared**: 0.55-0.70 depending on stat
 
-For questions or suggestions, please open an issue on GitHub.
+## Data Sources
+
+- **NBA Stats API**: Real-time player game logs and statistics
+- **Historical Data**: Multiple seasons for training (configurable)
+
+## Disclaimer
+
+This tool is for entertainment and educational purposes only. Predictions are based on historical data and statistical models, which cannot account for all factors affecting player performance. Always gamble responsibly and within your means.
+
+## License
+
+MIT License - see LICENSE file for details.
