@@ -282,6 +282,216 @@ class FeatureEngineer:
 
         return df
 
+    def create_minutes_workload_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create minutes and workload-related features for injury/load management detection.
+
+        Args:
+            df: DataFrame with player game logs
+
+        Returns:
+            DataFrame with minutes/workload features added
+        """
+        df = df.copy()
+
+        if 'MIN' not in df.columns:
+            return df
+
+        # Convert MIN to numeric if needed
+        if df['MIN'].dtype == 'object':
+            df['MIN_NUMERIC'] = df['MIN'].apply(self._parse_minutes)
+        else:
+            df['MIN_NUMERIC'] = df['MIN']
+
+        # Rolling minutes averages (already in rolling features, but we need specific ones)
+        # Minutes trend - comparing recent to longer term
+        df['MIN_L3'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+        )
+        df['MIN_L10'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+        )
+
+        # Minutes trend (positive = increasing minutes, negative = decreasing/load management)
+        df['MIN_TREND'] = df['MIN_L3'] - df['MIN_L10']
+        self.feature_columns.append('MIN_TREND')
+
+        # Minutes volatility - high volatility might indicate injury concerns
+        df['MIN_STD_L5'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=2).std())
+        )
+        self.feature_columns.append('MIN_STD_L5')
+
+        # Low minutes games in recent stretch (potential load management indicator)
+        df['LOW_MIN_GAMES_L5'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: (x.shift(1) < 20).rolling(5, min_periods=1).sum())
+        )
+        self.feature_columns.append('LOW_MIN_GAMES_L5')
+
+        # Did not play (DNP) or very low minutes in last game
+        df['LAST_GAME_LOW_MIN'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: (x.shift(1) < 15).astype(int))
+        )
+        self.feature_columns.append('LAST_GAME_LOW_MIN')
+
+        # Minutes consistency (coefficient of variation)
+        df['MIN_CV_L10'] = df['MIN_STD_L5'] / df['MIN_L10'].replace(0, np.nan)
+        self.feature_columns.append('MIN_CV_L10')
+
+        # Season high minutes percentage (are they at peak workload?)
+        df['MIN_SEASON_MAX'] = (
+            df.groupby(['PLAYER_ID', 'SEASON'])['MIN_NUMERIC']
+            .transform(lambda x: x.shift(1).expanding().max())
+        )
+        df['MIN_VS_SEASON_MAX'] = df['MIN_L3'] / df['MIN_SEASON_MAX'].replace(0, np.nan)
+        self.feature_columns.append('MIN_VS_SEASON_MAX')
+
+        # Cumulative minutes load (fatigue indicator)
+        df['CUMULATIVE_MIN_L5'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).sum())
+        )
+        self.feature_columns.append('CUMULATIVE_MIN_L5')
+
+        # Heavy workload indicator (played 35+ min in 3+ of last 5 games)
+        df['HEAVY_WORKLOAD_L5'] = (
+            df.groupby('PLAYER_ID')['MIN_NUMERIC']
+            .transform(lambda x: (x.shift(1) >= 35).rolling(5, min_periods=1).sum())
+        )
+        self.feature_columns.append('HEAVY_WORKLOAD_L5')
+
+        return df
+
+    def create_opponent_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create opponent-related features based on matchup data.
+
+        Args:
+            df: DataFrame with player game logs including MATCHUP column
+
+        Returns:
+            DataFrame with opponent features added
+        """
+        df = df.copy()
+
+        if 'MATCHUP' not in df.columns:
+            return df
+
+        # Extract opponent team abbreviation from matchup
+        # Format: "LAL vs. GSW" (home) or "LAL @ GSW" (away)
+        def extract_opponent(matchup):
+            if pd.isna(matchup):
+                return None
+            if ' vs. ' in matchup:
+                return matchup.split(' vs. ')[1]
+            elif ' @ ' in matchup:
+                return matchup.split(' @ ')[1]
+            return None
+
+        df['OPPONENT'] = df['MATCHUP'].apply(extract_opponent)
+
+        # Performance against this opponent (historical)
+        for stat in ['PTS', 'REB', 'AST']:
+            if stat not in df.columns:
+                continue
+
+            # Average against this specific opponent
+            opp_col = f'{stat}_VS_OPP_AVG'
+            df[opp_col] = (
+                df.groupby(['PLAYER_ID', 'OPPONENT'])[stat]
+                .transform(lambda x: x.shift(1).expanding().mean())
+            )
+            self.feature_columns.append(opp_col)
+
+        # Games played vs this opponent (familiarity)
+        df['GAMES_VS_OPP'] = (
+            df.groupby(['PLAYER_ID', 'OPPONENT']).cumcount()
+        )
+        self.feature_columns.append('GAMES_VS_OPP')
+
+        # Opponent strength proxy - using player's performance variance against them
+        # Higher variance might indicate tougher/more variable opponent
+        if 'PTS' in df.columns:
+            df['PTS_VS_OPP_STD'] = (
+                df.groupby(['PLAYER_ID', 'OPPONENT'])['PTS']
+                .transform(lambda x: x.shift(1).expanding().std())
+            )
+            # Fill NaN with overall std
+            overall_std = df.groupby('PLAYER_ID')['PTS'].transform(
+                lambda x: x.shift(1).expanding().std()
+            )
+            df['PTS_VS_OPP_STD'] = df['PTS_VS_OPP_STD'].fillna(overall_std)
+            self.feature_columns.append('PTS_VS_OPP_STD')
+
+        # Recent form against division/conference could be added with more data
+
+        return df
+
+    def create_scoring_opportunity_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create features related to scoring opportunities and usage.
+
+        Args:
+            df: DataFrame with player game logs
+
+        Returns:
+            DataFrame with scoring opportunity features
+        """
+        df = df.copy()
+
+        # Field goal attempts trend (usage indicator)
+        if 'FGA' in df.columns:
+            df['FGA_L3'] = (
+                df.groupby('PLAYER_ID')['FGA']
+                .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+            )
+            df['FGA_L10'] = (
+                df.groupby('PLAYER_ID')['FGA']
+                .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
+            )
+            df['FGA_TREND'] = df['FGA_L3'] - df['FGA_L10']
+            self.feature_columns.append('FGA_TREND')
+
+            # Usage stability
+            df['FGA_STD_L5'] = (
+                df.groupby('PLAYER_ID')['FGA']
+                .transform(lambda x: x.shift(1).rolling(5, min_periods=2).std())
+            )
+            self.feature_columns.append('FGA_STD_L5')
+
+        # Three-point attempt rate trend
+        if 'FG3A' in df.columns and 'FGA' in df.columns:
+            df['THREE_RATE'] = df['FG3A'] / df['FGA'].replace(0, np.nan)
+            df['THREE_RATE_L5'] = (
+                df.groupby('PLAYER_ID')['THREE_RATE']
+                .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+            )
+            self.feature_columns.append('THREE_RATE_L5')
+
+        # Free throw attempts (getting to the line indicator)
+        if 'FTA' in df.columns:
+            df['FTA_L5'] = (
+                df.groupby('PLAYER_ID')['FTA']
+                .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+            )
+            self.feature_columns.append('FTA_L5')
+
+            # Free throw rate (FTA/FGA)
+            if 'FGA' in df.columns:
+                df['FT_RATE'] = df['FTA'] / df['FGA'].replace(0, np.nan)
+                df['FT_RATE_L5'] = (
+                    df.groupby('PLAYER_ID')['FT_RATE']
+                    .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+                )
+                self.feature_columns.append('FT_RATE_L5')
+
+        return df
+
     def create_all_features(
         self,
         df: pd.DataFrame,
@@ -311,6 +521,9 @@ class FeatureEngineer:
         df = self.create_rest_features(df)
         df = self.create_home_away_features(df)
         df = self.create_game_context_features(df)
+        df = self.create_minutes_workload_features(df)
+        df = self.create_opponent_features(df)
+        df = self.create_scoring_opportunity_features(df)
 
         if include_target:
             df = self.create_target_variables(df)

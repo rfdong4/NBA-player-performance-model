@@ -352,6 +352,51 @@ def main():
                         with col4:
                             st.metric("L10 Range", f"{stats.get('last_10_min', 'N/A')} - {stats.get('last_10_max', 'N/A')}")
 
+                    # Workload and injury risk indicators
+                    if 'MIN' in df.columns:
+                        st.subheader("Workload Analysis")
+
+                        # Calculate workload metrics
+                        recent_min = df.tail(5)['MIN'].mean() if len(df) >= 5 else df['MIN'].mean()
+                        season_min = df['MIN'].mean()
+                        last_game_min = df.iloc[-1]['MIN']
+
+                        # Check for concerning patterns
+                        warnings = []
+
+                        # Back-to-back check
+                        if len(df) >= 2:
+                            last_date = pd.to_datetime(df.iloc[-1]['GAME_DATE'])
+                            prev_date = pd.to_datetime(df.iloc[-2]['GAME_DATE'])
+                            days_rest = (last_date - prev_date).days
+                            if days_rest <= 1:
+                                warnings.append("Back-to-back game situation")
+
+                        # Minutes drop check
+                        if recent_min < season_min * 0.85:
+                            warnings.append(f"Recent minutes down {((season_min - recent_min) / season_min * 100):.0f}% vs season avg")
+
+                        # Low minutes last game
+                        if last_game_min < 20 and season_min > 25:
+                            warnings.append(f"Last game only {last_game_min:.0f} min (season avg: {season_min:.0f})")
+
+                        # Heavy workload
+                        heavy_games = (df.tail(5)['MIN'] >= 35).sum() if len(df) >= 5 else 0
+                        if heavy_games >= 3:
+                            warnings.append(f"Heavy workload: {heavy_games}/5 recent games with 35+ min")
+
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Last Game MIN", f"{last_game_min:.0f}")
+                        with col2:
+                            st.metric("L5 Avg MIN", f"{recent_min:.1f}")
+                        with col3:
+                            st.metric("Season Avg MIN", f"{season_min:.1f}")
+
+                        if warnings:
+                            for warning in warnings:
+                                st.warning(f"⚠️ {warning}")
+
                     # Betting analysis details
                     if 'betting_analysis' in result:
                         st.subheader("Betting Analysis")
