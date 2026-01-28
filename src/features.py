@@ -233,30 +233,28 @@ class FeatureEngineer:
             df['IS_HOME'] = df['MATCHUP'].str.contains('vs.').astype(int)
             self.feature_columns.append('IS_HOME')
 
-            # Rolling home/away splits - simplified approach
+            # Rolling home/away splits - using expanding mean as simpler alternative
             for stat in ['PTS', 'REB', 'AST']:
                 if stat not in df.columns:
                     continue
 
-                # Create masked values for home/away
-                home_vals = df[stat].where(df['IS_HOME'] == 1)
-                away_vals = df[stat].where(df['IS_HOME'] == 0)
+                # Create masked columns for home/away stats
+                home_stat = df[stat].where(df['IS_HOME'] == 1)
+                away_stat = df[stat].where(df['IS_HOME'] == 0)
 
-                # Home performance rolling average
+                # Home performance - use transform with expanding mean (shifted)
                 home_col = f'{stat}_HOME_L10'
                 df[home_col] = (
-                    df.groupby('PLAYER_ID', group_keys=False)
-                    .apply(lambda x: x[stat].where(x['IS_HOME'] == 1)
-                           .shift(1).rolling(10, min_periods=1).mean())
+                    home_stat.groupby(df['PLAYER_ID'])
+                    .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
                 )
                 self.feature_columns.append(home_col)
 
-                # Away performance rolling average
+                # Away performance
                 away_col = f'{stat}_AWAY_L10'
                 df[away_col] = (
-                    df.groupby('PLAYER_ID', group_keys=False)
-                    .apply(lambda x: x[stat].where(x['IS_HOME'] == 0)
-                           .shift(1).rolling(10, min_periods=1).mean())
+                    away_stat.groupby(df['PLAYER_ID'])
+                    .transform(lambda x: x.shift(1).rolling(10, min_periods=1).mean())
                 )
                 self.feature_columns.append(away_col)
 
