@@ -233,28 +233,30 @@ class FeatureEngineer:
             df['IS_HOME'] = df['MATCHUP'].str.contains('vs.').astype(int)
             self.feature_columns.append('IS_HOME')
 
-            # Rolling home/away splits
+            # Rolling home/away splits - simplified approach
             for stat in ['PTS', 'REB', 'AST']:
                 if stat not in df.columns:
                     continue
 
-                # Home performance
+                # Create masked values for home/away
+                home_vals = df[stat].where(df['IS_HOME'] == 1)
+                away_vals = df[stat].where(df['IS_HOME'] == 0)
+
+                # Home performance rolling average
                 home_col = f'{stat}_HOME_L10'
                 df[home_col] = (
-                    df.groupby('PLAYER_ID')
+                    df.groupby('PLAYER_ID', group_keys=False)
                     .apply(lambda x: x[stat].where(x['IS_HOME'] == 1)
                            .shift(1).rolling(10, min_periods=1).mean())
-                    .reset_index(level=0, drop=True)
                 )
                 self.feature_columns.append(home_col)
 
-                # Away performance
+                # Away performance rolling average
                 away_col = f'{stat}_AWAY_L10'
                 df[away_col] = (
-                    df.groupby('PLAYER_ID')
+                    df.groupby('PLAYER_ID', group_keys=False)
                     .apply(lambda x: x[stat].where(x['IS_HOME'] == 0)
                            .shift(1).rolling(10, min_periods=1).mean())
-                    .reset_index(level=0, drop=True)
                 )
                 self.feature_columns.append(away_col)
 
