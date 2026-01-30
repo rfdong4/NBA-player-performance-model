@@ -135,8 +135,9 @@ def prepare_training_data(df: pd.DataFrame, verbose: bool = True) -> pd.DataFram
 def train_models(
     df: pd.DataFrame,
     feature_cols: list,
-    model_type: str = 'random_forest',
+    model_type: str = 'ensemble',
     test_size: float = 0.2,
+    use_feature_selection: bool = True,
     verbose: bool = True
 ):
     """
@@ -147,6 +148,7 @@ def train_models(
         feature_cols: List of feature column names
         model_type: Type of model to train
         test_size: Fraction of data for testing
+        use_feature_selection: Whether to use automatic feature selection
         verbose: Print progress
 
     Returns:
@@ -154,8 +156,12 @@ def train_models(
     """
     if verbose:
         print(f"\nTraining {model_type} models...")
+        if use_feature_selection:
+            print("Feature selection: ENABLED")
+        else:
+            print("Feature selection: DISABLED")
 
-    trainer = ModelTrainer(model_type=model_type)
+    trainer = ModelTrainer(model_type=model_type, use_feature_selection=use_feature_selection)
 
     # Get target columns
     targets = [c for c in df.columns if c.startswith('TARGET_')]
@@ -208,9 +214,14 @@ def main():
     parser.add_argument(
         '--model-type', '-m',
         type=str,
-        choices=['random_forest', 'gradient_boosting', 'xgboost'],
-        default='random_forest',
-        help='Model type to train (default: random_forest)'
+        choices=['random_forest', 'gradient_boosting', 'xgboost', 'ensemble'],
+        default='ensemble',
+        help='Model type to train (default: ensemble)'
+    )
+    parser.add_argument(
+        '--no-feature-selection',
+        action='store_true',
+        help='Disable automatic feature selection'
     )
     parser.add_argument(
         '--use-existing', '-e',
@@ -272,6 +283,7 @@ def main():
         feature_cols,
         model_type=args.model_type,
         test_size=args.test_size,
+        use_feature_selection=not args.no_feature_selection,
         verbose=verbose
     )
 
