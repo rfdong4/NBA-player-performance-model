@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.predictor import NBAPredictor, PredictionFormatter
 from src.data_fetcher import NBADataFetcher, get_current_season
 from src.features import FeatureEngineer
+from src.prizepicks_scraper import PrizePicksScraper, PrizePicksScraperError
+from src.prizepicks_analyzer import PrizePicksAnalyzer, PropEntry
 
 
 # Page configuration
@@ -162,6 +164,39 @@ st.markdown("""
         font-size: 1.5rem;
         font-weight: 700;
     }
+
+    /* PrizePicks styles */
+    .pp-high-prob {
+        background-color: #d4edda;
+        color: #155724;
+    }
+
+    .pp-med-prob {
+        background-color: #fff3cd;
+        color: #856404;
+    }
+
+    .pp-low-prob {
+        background-color: #f8d7da;
+        color: #721c24;
+    }
+
+    .pp-summary-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 20px;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        margin: 10px 0;
+    }
+
+    .pp-best-pick {
+        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        padding: 15px 20px;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,6 +222,13 @@ def fetch_player_data(player_name: str, season: str):
 
     df = fetcher.get_player_game_log(player['id'], season)
     return player, df
+
+
+@st.cache_data(ttl=300)
+def fetch_prizepicks_props():
+    """Fetch PrizePicks NBA props with caching."""
+    scraper = PrizePicksScraper()
+    return scraper.fetch_nba_props()
 
 
 def create_performance_chart(df: pd.DataFrame, stat: str, stat_name: str, line: float = None):
@@ -240,6 +282,71 @@ def create_performance_chart(df: pd.DataFrame, stat: str, stat_name: str, line: 
             x=1
         ),
         font=dict(color="#333")
+    )
+
+    return fig
+
+
+def create_prizepicks_chart(results: list, top_n: int = 15):
+    """Create a horizontal bar chart for PrizePicks props ranked by probability."""
+    # Take top N results
+    display_results = results[:top_n]
+
+    # Prepare data
+    labels = []
+    probabilities = []
+    colors = []
+    picks = []
+
+    for r in display_results:
+        if 'error' in r:
+            continue
+        label = f"{r['player_name']} {r.get('prop_type_display', r['prop_type'])} {r['best_pick'][0]}{r['line']}"
+        labels.append(label)
+        prob = r['best_probability'] * 100
+        probabilities.append(prob)
+        picks.append(r['best_pick'])
+
+        # Color based on probability
+        if prob >= 60:
+            colors.append('#28a745')  # Green
+        elif prob >= 52.4:
+            colors.append('#ffc107')  # Yellow
+        else:
+            colors.append('#dc3545')  # Red
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        y=labels,
+        x=probabilities,
+        orientation='h',
+        marker_color=colors,
+        text=[f"{p:.1f}%" for p in probabilities],
+        textposition='auto',
+        textfont=dict(size=12, color='white')
+    ))
+
+    # Add break-even line
+    fig.add_vline(
+        x=52.4,
+        line_dash="dash",
+        line_color="#E91E63",
+        line_width=2,
+        annotation_text="Break-even (52.4%)",
+        annotation_position="top"
+    )
+
+    fig.update_layout(
+        title="Props Ranked by Probability of Hitting",
+        xaxis_title="Probability %",
+        yaxis_title="",
+        template="plotly_white",
+        height=max(400, len(labels) * 35),
+        xaxis=dict(range=[40, 80]),
+        yaxis=dict(autorange="reversed"),  # Highest prob at top
+        font=dict(color="#333"),
+        margin=dict(l=200)
     )
 
     return fig
@@ -509,6 +616,231 @@ def get_stat_column(prop_type: str, df: pd.DataFrame) -> str:
     return stat_map.get(prop_type.lower(), 'PTS')
 
 
+def display_prizepicks_analyzer(predictor, models_loaded):
+    """Display the PrizePicks Analyzer section."""
+    st.header("PrizePicks Analyzer")
+    st.markdown("*Find the most likely props to hit from today's PrizePicks board*")
+
+    if not models_loaded:
+        st.warning("Models not loaded. Train models first to use this feature:\n```\npython train_models.py\n```")
+        return
+
+    # Initialize session state
+    if 'pp_props' not in st.session_state:
+        st.session_state.pp_props = None
+    if 'pp_results' not in st.session_state:
+        st.session_state.pp_results = None
+
+    # Fetch props section
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        if st.button("Fetch Props from PrizePicks", type="primary", use_container_width=True):
+            with st.spinner("Fetching NBA props from PrizePicks..."):
+                try:
+                    props = fetch_prizepicks_props()
+                    st.session_state.pp_props = props
+                    st.session_state.pp_results = None  # Clear old results
+                    st.success(f"Fetched {len(props)} NBA props from PrizePicks!")
+                except PrizePicksScraperError as e:
+                    st.error(f"Failed to fetch props: {e}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+    with col2:
+        if st.button("Clear", use_container_width=True):
+            st.session_state.pp_props = None
+            st.session_state.pp_results = None
+            st.rerun()
+
+    # Show manual entry expander
+    with st.expander("Manual Entry (add custom props)"):
+        st.markdown("Add props manually if the fetch doesn't work or you want to analyze specific picks.")
+
+        if 'manual_props' not in st.session_state:
+            st.session_state.manual_props = []
+
+        col1, col2, col3, col4 = st.columns([3, 2, 1.5, 1])
+        with col1:
+            manual_player = st.text_input("Player Name", key="manual_player", placeholder="e.g., LeBron James")
+        with col2:
+            manual_prop = st.selectbox("Prop Type", key="manual_prop",
+                options=["Points", "Rebounds", "Assists", "Steals", "Blocks", "Threes", "Pts+Rebs+Asts"])
+        with col3:
+            manual_line = st.number_input("Line", key="manual_line", min_value=0.5, max_value=100.0, value=20.0, step=0.5)
+        with col4:
+            if st.button("Add", key="add_manual"):
+                prop_map = {
+                    "Points": "points", "Rebounds": "rebounds", "Assists": "assists",
+                    "Steals": "steals", "Blocks": "blocks", "Threes": "threes",
+                    "Pts+Rebs+Asts": "pts_reb_ast"
+                }
+                new_prop = {
+                    'player_name': manual_player,
+                    'prop_type': prop_map[manual_prop],
+                    'prop_type_display': manual_prop,
+                    'line': manual_line,
+                    'team': '',
+                    'position': '',
+                    'start_time': ''
+                }
+                if st.session_state.pp_props is None:
+                    st.session_state.pp_props = []
+                st.session_state.pp_props.append(new_prop)
+                st.session_state.pp_results = None
+                st.rerun()
+
+    # Display fetched props
+    if st.session_state.pp_props:
+        props = st.session_state.pp_props
+        st.markdown(f"**{len(props)} props loaded**")
+
+        # Filters
+        st.markdown("### Filters")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            min_prob = st.slider("Minimum Probability %", 40, 70, 50) / 100
+
+        with col2:
+            prop_types = list(set(p.get('prop_type_display', p.get('prop_type', '')) for p in props))
+            selected_props = st.multiselect("Prop Types", prop_types, default=prop_types)
+
+        with col3:
+            top_n = st.selectbox("Show Top N", [10, 15, 20, 30, 50], index=1)
+
+        # Analyze button
+        if st.button("Analyze Props", type="primary", use_container_width=True):
+            analyzer = PrizePicksAnalyzer(predictor)
+
+            # Convert to PropEntry objects
+            prop_entries = []
+            for p in props:
+                display_type = p.get('prop_type_display', p.get('prop_type', 'points'))
+                if display_type not in selected_props:
+                    continue
+                prop_entries.append(PropEntry(
+                    player_name=p['player_name'],
+                    prop_type=p['prop_type'],
+                    line=p['line'],
+                    prop_type_display=display_type,
+                    team=p.get('team', ''),
+                    position=p.get('position', ''),
+                    start_time=p.get('start_time', '')
+                ))
+
+            if not prop_entries:
+                st.warning("No props to analyze after filtering.")
+                return
+
+            # Analyze with progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def update_progress(current, total):
+                progress_bar.progress(current / total)
+                status_text.text(f"Analyzing prop {current}/{total}...")
+
+            with st.spinner("Analyzing props..."):
+                results = analyzer.analyze_props(prop_entries, progress_callback=update_progress)
+
+            progress_bar.empty()
+            status_text.empty()
+
+            # Filter by probability
+            filtered_results = [r for r in results if r.get('best_probability', 0) >= min_prob and 'error' not in r]
+
+            st.session_state.pp_results = filtered_results
+            st.success(f"Analysis complete! Found {len(filtered_results)} props above {min_prob*100:.0f}% probability.")
+
+        # Display results
+        if st.session_state.pp_results:
+            results = st.session_state.pp_results
+
+            st.markdown("---")
+            st.subheader("Most Likely Props to Hit")
+
+            # Summary stats
+            if results:
+                analyzer = PrizePicksAnalyzer(predictor)
+                # Calculate summary manually
+                probs = [r['best_probability'] for r in results if 'best_probability' in r]
+                if probs:
+                    best = max(results, key=lambda x: x.get('best_probability', 0))
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Props Analyzed", len(results))
+                    with col2:
+                        st.metric("Avg Probability", f"{sum(probs)/len(probs)*100:.1f}%")
+                    with col3:
+                        st.metric("Above 55%", sum(1 for p in probs if p >= 0.55))
+                    with col4:
+                        st.metric("Above 60%", sum(1 for p in probs if p >= 0.60))
+
+                    # Best pick highlight
+                    st.markdown(f"""
+                    <div class="pp-best-pick">
+                        <div style="font-size: 0.9rem; opacity: 0.9;">BEST PICK</div>
+                        <div style="font-size: 1.5rem; font-weight: bold; margin: 5px 0;">
+                            {best['player_name']} {best.get('prop_type_display', best['prop_type'])} {best['best_pick']} {best['line']}
+                        </div>
+                        <div style="font-size: 1.2rem;">{best['best_probability']*100:.1f}% probability</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # Results table
+            st.markdown("### All Props Ranked")
+
+            # Create DataFrame for display
+            table_data = []
+            for r in results[:top_n]:
+                prob = r.get('best_probability', 0) * 100
+                if prob >= 60:
+                    prob_display = f"🟢 {prob:.1f}%"
+                elif prob >= 52.4:
+                    prob_display = f"🟡 {prob:.1f}%"
+                else:
+                    prob_display = f"🔴 {prob:.1f}%"
+
+                table_data.append({
+                    'Rank': r.get('rank', 0),
+                    'Player': r['player_name'],
+                    'Prop': r.get('prop_type_display', r['prop_type']),
+                    'Line': r['line'],
+                    'Best Pick': r['best_pick'],
+                    'Model Prediction': f"{r.get('prediction', 0):.1f}",
+                    'Probability': prob_display,
+                    'Edge': f"{r.get('edge', 0)*100:+.1f}%",
+                    'Confidence': r.get('confidence', 'low').title()
+                })
+
+            if table_data:
+                results_df = pd.DataFrame(table_data)
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
+
+                # Visualization
+                st.markdown("### Probability Chart")
+                fig = create_prizepicks_chart(results, top_n=top_n)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Correlation warnings
+                prop_entries = [PropEntry(
+                    player_name=r['player_name'],
+                    prop_type=r['prop_type'],
+                    line=r['line'],
+                    prop_type_display=r.get('prop_type_display', '')
+                ) for r in results]
+
+                analyzer = PrizePicksAnalyzer(predictor)
+                warnings = analyzer.get_correlation_warnings(prop_entries)
+
+                if warnings:
+                    st.markdown("### Correlation Warnings")
+                    for warning in warnings:
+                        st.warning(warning)
+
+
 def main():
     st.title("🏀 NBA Player Props Analyzer")
     st.markdown("*AI-powered predictions for sports betting analysis*")
@@ -516,100 +848,181 @@ def main():
     # Load predictor
     predictor, models_loaded = load_predictor()
 
-    # Sidebar
-    with st.sidebar:
-        st.header("Settings")
+    # Mode selection
+    mode = st.radio(
+        "Select Mode",
+        ["Single Player Analysis", "PrizePicks Analyzer"],
+        horizontal=True,
+        help="Choose between analyzing a single player or fetching all props from PrizePicks"
+    )
 
-        player_name = st.text_input(
-            "Player Name",
-            placeholder="e.g., LeBron James",
-            help="Enter the full name of an NBA player"
-        )
+    st.markdown("---")
 
-        prop_type = st.selectbox(
-            "Prop Type",
-            options=["Points", "Rebounds", "Assists", "Steals", "Blocks", "Threes", "Pts+Reb+Ast", "Pts+Reb", "Pts+Ast"],
-            index=0
-        )
+    if mode == "PrizePicks Analyzer":
+        display_prizepicks_analyzer(predictor, models_loaded)
+    else:
+        # Original single player mode
+        # Sidebar
+        with st.sidebar:
+            st.header("Settings")
 
-        prop_map = {
-            "Points": "points", "Rebounds": "rebounds", "Assists": "assists",
-            "Steals": "steals", "Blocks": "blocks", "Threes": "threes",
-            "Pts+Reb+Ast": "pts_reb_ast", "Pts+Reb": "pts_reb", "Pts+Ast": "pts_ast"
-        }
+            player_name = st.text_input(
+                "Player Name",
+                placeholder="e.g., LeBron James",
+                help="Enter the full name of an NBA player"
+            )
 
-        line = st.number_input(
-            "Betting Line (optional)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=0.5,
-            help="Enter the sportsbook line for analysis"
-        )
+            prop_type = st.selectbox(
+                "Prop Type",
+                options=["Points", "Rebounds", "Assists", "Steals", "Blocks", "Threes", "Pts+Reb+Ast", "Pts+Reb", "Pts+Ast"],
+                index=0
+            )
 
-        if line == 0.0:
-            line = None
+            prop_map = {
+                "Points": "points", "Rebounds": "rebounds", "Assists": "assists",
+                "Steals": "steals", "Blocks": "blocks", "Threes": "threes",
+                "Pts+Reb+Ast": "pts_reb_ast", "Pts+Reb": "pts_reb", "Pts+Ast": "pts_ast"
+            }
 
-        current_season = get_current_season()
-        season = st.selectbox(
-            "Season",
-            options=[current_season, '2023-24', '2022-23'],
-            index=0
-        )
+            line = st.number_input(
+                "Betting Line (optional)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=0.5,
+                help="Enter the sportsbook line for analysis"
+            )
 
-        analyze_button = st.button("Analyze Player", type="primary", use_container_width=True)
+            if line == 0.0:
+                line = None
 
-        st.markdown("---")
-        if not models_loaded:
-            st.warning("Models not loaded. Train models first:\n```\npython train_models.py\n```")
+            current_season = get_current_season()
+            season = st.selectbox(
+                "Season",
+                options=[current_season, '2023-24', '2022-23'],
+                index=0
+            )
 
-    # Main content
-    if analyze_button and player_name:
-        with st.spinner(f"Fetching data for {player_name}..."):
-            player, df = fetch_player_data(player_name, season)
+            analyze_button = st.button("Analyze Player", type="primary", use_container_width=True)
 
-        if player is None:
-            st.error(f"Player not found: {player_name}")
-            st.info("Try using the player's full name (e.g., 'Stephen Curry' instead of 'Steph')")
-            return
+            st.markdown("---")
+            if not models_loaded:
+                st.warning("Models not loaded. Train models first:\n```\npython train_models.py\n```")
 
-        if df is None or df.empty:
-            st.error(f"No game data found for {player_name} in {season}")
-            return
+        # Main content
+        if analyze_button and player_name:
+            with st.spinner(f"Fetching data for {player_name}..."):
+                player, df = fetch_player_data(player_name, season)
 
-        # Player header
-        st.header(f"{player['full_name']}")
-        st.caption(f"Season: {season} | Games Played: {len(df)}")
+            if player is None:
+                st.error(f"Player not found: {player_name}")
+                st.info("Try using the player's full name (e.g., 'Stephen Curry' instead of 'Steph')")
+                return
 
-        selected_prop = prop_map[prop_type]
-        stat_col = get_stat_column(selected_prop, df)
+            if df is None or df.empty:
+                st.error(f"No game data found for {player_name} in {season}")
+                return
 
-        # Combined stats handling
-        if selected_prop == "pts_reb_ast":
-            df['COMBINED'] = df['PTS'] + df['REB'] + df['AST']
-        elif selected_prop == "pts_reb":
-            df['COMBINED'] = df['PTS'] + df['REB']
-        elif selected_prop == "pts_ast":
-            df['COMBINED'] = df['PTS'] + df['AST']
+            # Player header
+            st.header(f"{player['full_name']}")
+            st.caption(f"Season: {season} | Games Played: {len(df)}")
 
-        # Tabs
-        tab1, tab2, tab3 = st.tabs(["Prediction", "Performance", "Game Log"])
+            selected_prop = prop_map[prop_type]
+            stat_col = get_stat_column(selected_prop, df)
 
-        with tab1:
-            if models_loaded:
-                with st.spinner("Generating prediction..."):
-                    result = predictor.get_player_prediction(
-                        player_name,
-                        prop_type=selected_prop,
-                        line=line,
-                        include_analysis=True
-                    )
+            # Combined stats handling
+            if selected_prop == "pts_reb_ast":
+                df['COMBINED'] = df['PTS'] + df['REB'] + df['AST']
+            elif selected_prop == "pts_reb":
+                df['COMBINED'] = df['PTS'] + df['REB']
+            elif selected_prop == "pts_ast":
+                df['COMBINED'] = df['PTS'] + df['AST']
 
-                if 'error' in result:
-                    st.warning(result['error'])
+            # Tabs
+            tab1, tab2, tab3 = st.tabs(["Prediction", "Performance", "Game Log"])
 
-                    # Show basic stats
-                    st.subheader("Recent Statistics")
+            with tab1:
+                if models_loaded:
+                    with st.spinner("Generating prediction..."):
+                        result = predictor.get_player_prediction(
+                            player_name,
+                            prop_type=selected_prop,
+                            line=line,
+                            include_analysis=True
+                        )
+
+                    if 'error' in result:
+                        st.warning(result['error'])
+
+                        # Show basic stats
+                        st.subheader("Recent Statistics")
+                        actual_col = stat_col if stat_col in df.columns else 'PTS'
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Last Game", int(df.iloc[-1][actual_col]))
+                        with col2:
+                            st.metric("Last 5 Avg", f"{df.tail(5)[actual_col].mean():.1f}")
+                        with col3:
+                            st.metric("Last 10 Avg", f"{df.tail(10)[actual_col].mean():.1f}")
+                        with col4:
+                            st.metric("Season Avg", f"{df[actual_col].mean():.1f}")
+                    else:
+                        # Display prediction
+                        display_prediction_section(result, df, selected_prop, line)
+
+                        # Insights section
+                        st.markdown("---")
+                        st.subheader("Why This Prediction?")
+
+                        insights = generate_prediction_insights(df, result['prediction'], selected_prop, line)
+
+                        for insight in insights:
+                            if insight['type'] == 'positive':
+                                st.markdown(f"""
+                                <div class="insight-positive">
+                                    <strong>{insight['title']}:</strong> {insight['text']}
+                                </div>
+                                """, unsafe_allow_html=True)
+                            elif insight['type'] == 'negative':
+                                st.markdown(f"""
+                                <div class="insight-negative">
+                                    <strong>{insight['title']}:</strong> {insight['text']}
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"""
+                                <div class="insight-neutral">
+                                    <strong>{insight['title']}:</strong> {insight['text']}
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        # Workload section
+                        if 'MIN' in df.columns:
+                            st.markdown("---")
+                            st.subheader("Workload Monitor")
+
+                            recent_min = df.tail(5)['MIN'].mean()
+                            season_min = df['MIN'].mean()
+                            last_game_min = df.iloc[-1]['MIN']
+
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                delta = last_game_min - season_min
+                                st.metric("Last Game MIN", f"{last_game_min:.0f}", delta=f"{delta:+.1f} vs avg")
+                            with col2:
+                                st.metric("L5 Avg MIN", f"{recent_min:.1f}")
+                            with col3:
+                                st.metric("Season Avg MIN", f"{season_min:.1f}")
+
+                            # Workload warnings
+                            if recent_min < season_min * 0.85:
+                                st.warning(f"Minutes trending down - could indicate load management or reduced role")
+
+                            heavy_games = (df.tail(5)['MIN'] >= 35).sum()
+                            if heavy_games >= 3:
+                                st.info(f"Heavy recent workload ({heavy_games}/5 games with 35+ min) - watch for fatigue")
+                else:
+                    st.info("Train models to see predictions. Showing basic statistics:")
                     actual_col = stat_col if stat_col in df.columns else 'PTS'
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
@@ -620,129 +1033,62 @@ def main():
                         st.metric("Last 10 Avg", f"{df.tail(10)[actual_col].mean():.1f}")
                     with col4:
                         st.metric("Season Avg", f"{df[actual_col].mean():.1f}")
-                else:
-                    # Display prediction
-                    display_prediction_section(result, df, selected_prop, line)
 
-                    # Insights section
-                    st.markdown("---")
-                    st.subheader("Why This Prediction?")
+            with tab2:
+                st.subheader("Performance Trends")
 
-                    insights = generate_prediction_insights(df, result['prediction'], selected_prop, line)
+                actual_stat_col = stat_col if stat_col in df.columns else 'PTS'
+                fig = create_performance_chart(df, actual_stat_col, prop_type, line)
+                st.plotly_chart(fig, use_container_width=True)
 
-                    for insight in insights:
-                        if insight['type'] == 'positive':
+                if line:
+                    st.subheader("Hit Rate Analysis")
+
+                    lines_to_check = [
+                        max(0, line - 2),
+                        max(0, line - 1),
+                        line,
+                        line + 1,
+                        line + 2
+                    ]
+
+                    fig_hit = create_hit_rate_chart(df.tail(20), actual_stat_col, lines_to_check)
+                    st.plotly_chart(fig_hit, use_container_width=True)
+
+                    # Last 10 games visual
+                    st.subheader("Last 10 Games vs Line")
+                    recent = df.tail(10).copy()
+
+                    cols = st.columns(10)
+                    for idx, (_, row) in enumerate(recent.iterrows()):
+                        with cols[idx]:
+                            val = row[actual_stat_col]
+                            is_over = val > line
+                            color = "#28a745" if is_over else "#dc3545"
+                            result_text = "O" if is_over else "U"
                             st.markdown(f"""
-                            <div class="insight-positive">
-                                <strong>{insight['title']}:</strong> {insight['text']}
+                            <div style="text-align:center; padding: 10px; background: {color}; border-radius: 8px; color: white;">
+                                <div style="font-size: 1.2rem; font-weight: bold;">{int(val)}</div>
+                                <div style="font-size: 0.8rem;">{result_text}</div>
                             </div>
                             """, unsafe_allow_html=True)
-                        elif insight['type'] == 'negative':
-                            st.markdown(f"""
-                            <div class="insight-negative">
-                                <strong>{insight['title']}:</strong> {insight['text']}
-                            </div>
-                            """, unsafe_allow_html=True)
-                        else:
-                            st.markdown(f"""
-                            <div class="insight-neutral">
-                                <strong>{insight['title']}:</strong> {insight['text']}
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.caption(row['GAME_DATE'].strftime('%m/%d') if hasattr(row['GAME_DATE'], 'strftime') else str(row['GAME_DATE'])[:5])
 
-                    # Workload section
-                    if 'MIN' in df.columns:
-                        st.markdown("---")
-                        st.subheader("Workload Monitor")
+            with tab3:
+                st.subheader("Game Log")
 
-                        recent_min = df.tail(5)['MIN'].mean()
-                        season_min = df['MIN'].mean()
-                        last_game_min = df.iloc[-1]['MIN']
+                display_cols = ['GAME_DATE', 'MATCHUP', 'WL', 'MIN', 'PTS', 'REB', 'AST',
+                              'STL', 'BLK', 'FG_PCT', 'FG3M', 'FG3A', 'FTM', 'FTA', 'PLUS_MINUS']
+                available_cols = [c for c in display_cols if c in df.columns]
 
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            delta = last_game_min - season_min
-                            st.metric("Last Game MIN", f"{last_game_min:.0f}", delta=f"{delta:+.1f} vs avg")
-                        with col2:
-                            st.metric("L5 Avg MIN", f"{recent_min:.1f}")
-                        with col3:
-                            st.metric("Season Avg MIN", f"{season_min:.1f}")
+                display_df = df[available_cols].copy()
+                display_df = display_df.sort_values('GAME_DATE', ascending=False)
+                display_df['GAME_DATE'] = pd.to_datetime(display_df['GAME_DATE']).dt.strftime('%Y-%m-%d')
 
-                        # Workload warnings
-                        if recent_min < season_min * 0.85:
-                            st.warning(f"Minutes trending down - could indicate load management or reduced role")
+                st.dataframe(display_df, use_container_width=True, height=500)
 
-                        heavy_games = (df.tail(5)['MIN'] >= 35).sum()
-                        if heavy_games >= 3:
-                            st.info(f"Heavy recent workload ({heavy_games}/5 games with 35+ min) - watch for fatigue")
-            else:
-                st.info("Train models to see predictions. Showing basic statistics:")
-                actual_col = stat_col if stat_col in df.columns else 'PTS'
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Last Game", int(df.iloc[-1][actual_col]))
-                with col2:
-                    st.metric("Last 5 Avg", f"{df.tail(5)[actual_col].mean():.1f}")
-                with col3:
-                    st.metric("Last 10 Avg", f"{df.tail(10)[actual_col].mean():.1f}")
-                with col4:
-                    st.metric("Season Avg", f"{df[actual_col].mean():.1f}")
-
-        with tab2:
-            st.subheader("Performance Trends")
-
-            actual_stat_col = stat_col if stat_col in df.columns else 'PTS'
-            fig = create_performance_chart(df, actual_stat_col, prop_type, line)
-            st.plotly_chart(fig, use_container_width=True)
-
-            if line:
-                st.subheader("Hit Rate Analysis")
-
-                lines_to_check = [
-                    max(0, line - 2),
-                    max(0, line - 1),
-                    line,
-                    line + 1,
-                    line + 2
-                ]
-
-                fig_hit = create_hit_rate_chart(df.tail(20), actual_stat_col, lines_to_check)
-                st.plotly_chart(fig_hit, use_container_width=True)
-
-                # Last 10 games visual
-                st.subheader("Last 10 Games vs Line")
-                recent = df.tail(10).copy()
-
-                cols = st.columns(10)
-                for idx, (_, row) in enumerate(recent.iterrows()):
-                    with cols[idx]:
-                        val = row[actual_stat_col]
-                        is_over = val > line
-                        color = "#28a745" if is_over else "#dc3545"
-                        result_text = "O" if is_over else "U"
-                        st.markdown(f"""
-                        <div style="text-align:center; padding: 10px; background: {color}; border-radius: 8px; color: white;">
-                            <div style="font-size: 1.2rem; font-weight: bold;">{int(val)}</div>
-                            <div style="font-size: 0.8rem;">{result_text}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.caption(row['GAME_DATE'].strftime('%m/%d') if hasattr(row['GAME_DATE'], 'strftime') else str(row['GAME_DATE'])[:5])
-
-        with tab3:
-            st.subheader("Game Log")
-
-            display_cols = ['GAME_DATE', 'MATCHUP', 'WL', 'MIN', 'PTS', 'REB', 'AST',
-                          'STL', 'BLK', 'FG_PCT', 'FG3M', 'FG3A', 'FTM', 'FTA', 'PLUS_MINUS']
-            available_cols = [c for c in display_cols if c in df.columns]
-
-            display_df = df[available_cols].copy()
-            display_df = display_df.sort_values('GAME_DATE', ascending=False)
-            display_df['GAME_DATE'] = pd.to_datetime(display_df['GAME_DATE']).dt.strftime('%Y-%m-%d')
-
-            st.dataframe(display_df, use_container_width=True, height=500)
-
-    elif not player_name and analyze_button:
-        st.warning("Please enter a player name")
+        elif not player_name and analyze_button:
+            st.warning("Please enter a player name")
 
     # Footer
     st.markdown("---")

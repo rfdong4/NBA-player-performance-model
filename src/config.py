@@ -65,3 +65,10 @@ TRAINING_SEASONS = ['2021-22', '2022-23', '2023-24', '2024-25']
 
 # Minimum games required for prediction
 MIN_GAMES_FOR_PREDICTION = 10
+
+# PrizePicks settings
+PRIZEPICKS_API_URL = "https://api.prizepicks.com"
+PRIZEPICKS_NBA_LEAGUE_ID = 7
+PRIZEPICKS_CACHE_TTL = 300  # Cache props for 5 minutes
+PRIZEPICKS_MAX_PROPS = 100  # Max props to display
+PRIZEPICKS_BREAKEVEN_PROBABILITY = 0.524  # -110 odds implied probability
