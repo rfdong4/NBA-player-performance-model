@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.predictor import NBAPredictor, PredictionFormatter
 from src.data_fetcher import NBADataFetcher, get_current_season
 from src.features import FeatureEngineer
+from src.prizepicks import PrizePicksAnalyzer, PropPick
 
 
 # Page configuration
@@ -509,14 +510,224 @@ def get_stat_column(prop_type: str, df: pd.DataFrame) -> str:
     return stat_map.get(prop_type.lower(), 'PTS')
 
 
-def main():
-    st.title("🏀 NBA Player Props Analyzer")
-    st.markdown("*AI-powered predictions for sports betting analysis*")
+def prizepicks_page():
+    """PrizePicks comparison page."""
+    st.title("🎯 PrizePicks Analyzer")
+    st.markdown("*Paste your PrizePicks props to find the best plays*")
 
-    # Load predictor
     predictor, models_loaded = load_predictor()
 
-    # Sidebar
+    if not models_loaded:
+        st.error("Models not loaded. Please train models first: `python train_models.py`")
+        return
+
+    # Initialize analyzer
+    analyzer = PrizePicksAnalyzer(predictor)
+    analyzer._models_loaded = models_loaded
+
+    # Input section
+    st.subheader("Enter Props")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        props_input = st.text_area(
+            "Paste props (one per line)",
+            placeholder="LeBron James, points, 25.5\nStephen Curry, threes, 4.5\nNikola Jokic, rebounds, 12.5\nLuka Doncic, assists, 8.5",
+            height=200,
+            help="Format: Player Name, prop_type, line"
+        )
+
+    with col2:
+        st.markdown("**Supported prop types:**")
+        st.markdown("""
+        - `points`
+        - `rebounds`
+        - `assists`
+        - `steals`
+        - `blocks`
+        - `threes`
+        - `turnovers`
+        """)
+
+        min_edge = st.slider("Minimum Edge %", 0, 15, 5) / 100
+        min_confidence = st.selectbox("Minimum Confidence", ["weak", "moderate", "strong"], index=1)
+
+    analyze_btn = st.button("🔍 Analyze Props", type="primary", use_container_width=True)
+
+    if analyze_btn and props_input.strip():
+        # Parse props
+        props = []
+        for line in props_input.strip().split('\n'):
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 3:
+                try:
+                    props.append({
+                        'player': parts[0],
+                        'prop_type': parts[1].lower(),
+                        'line': float(parts[2])
+                    })
+                except ValueError:
+                    st.warning(f"Could not parse line: {line}")
+
+        if not props:
+            st.error("No valid props found. Check the format.")
+            return
+
+        with st.spinner(f"Analyzing {len(props)} props..."):
+            picks = analyzer.analyze_slate(props)
+
+        if not picks:
+            st.warning("Could not analyze any props. Check player names and try again.")
+            return
+
+        # Summary metrics
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+
+        strong_picks = [p for p in picks if p.confidence == 'strong' and p.edge >= min_edge]
+        moderate_picks = [p for p in picks if p.confidence == 'moderate' and p.edge >= min_edge]
+        over_picks = [p for p in picks if p.recommendation == 'OVER' and p.edge >= min_edge]
+        under_picks = [p for p in picks if p.recommendation == 'UNDER' and p.edge >= min_edge]
+
+        with col1:
+            st.metric("Total Props", len(picks))
+        with col2:
+            st.metric("Strong Plays", len(strong_picks))
+        with col3:
+            st.metric("Overs", len(over_picks))
+        with col4:
+            st.metric("Unders", len(under_picks))
+
+        # Best picks section
+        st.markdown("---")
+        st.subheader("🏆 Best Plays")
+
+        best_picks = [p for p in picks if p.edge >= min_edge and p.confidence in (['strong', 'moderate'] if min_confidence != 'weak' else ['strong', 'moderate', 'weak'])]
+
+        if not best_picks:
+            st.info(f"No picks meet the {min_edge*100:.0f}% edge and {min_confidence} confidence criteria.")
+        else:
+            for pick in best_picks[:5]:
+                trend_emoji = "🔥" if pick.trend == 'hot' else "❄️" if pick.trend == 'cold' else "➡️"
+                conf_color = "#28a745" if pick.confidence == 'strong' else "#ffc107" if pick.confidence == 'moderate' else "#6c757d"
+
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 2])
+
+                    with col1:
+                        st.markdown(f"### {pick.player_name}")
+                        st.caption(f"{pick.prop_type.upper()} | Line: {pick.line}")
+
+                    with col2:
+                        rec_color = "#28a745" if pick.recommendation == 'OVER' else "#dc3545"
+                        st.markdown(f"""
+                        <div style="text-align: center;">
+                            <span style="background: {rec_color}; color: white; padding: 8px 20px; border-radius: 5px; font-weight: bold; font-size: 1.2rem;">
+                                {pick.recommendation} {pick.line}
+                            </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    with col3:
+                        st.metric("Prediction", f"{pick.prediction:.1f}", delta=f"{pick.diff_from_line:+.1f}")
+
+                    # Details row
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1:
+                        st.metric("Edge", f"{pick.edge_pct:.1f}%")
+                    with col2:
+                        st.metric("Probability", f"{pick.probability*100:.0f}%")
+                    with col3:
+                        st.metric("L5 Avg", f"{pick.last_5_avg:.1f}")
+                    with col4:
+                        st.metric("Hit Rate (L10)", f"{pick.recent_hit_rate*100:.0f}%")
+                    with col5:
+                        st.markdown(f"**Trend:** {trend_emoji} {pick.trend.upper()}")
+
+                    # Reasoning
+                    with st.expander("Analysis Details"):
+                        for reason in pick.reasoning:
+                            st.markdown(f"• {reason}")
+                        if pick.minutes_concern:
+                            st.warning("⚠️ Minutes concern - recent minutes down")
+
+                    st.markdown("---")
+
+        # All picks table
+        st.subheader("📊 All Props Ranked")
+
+        table_data = []
+        for pick in picks:
+            table_data.append({
+                'Player': pick.player_name,
+                'Prop': pick.prop_type,
+                'Line': pick.line,
+                'Prediction': round(pick.prediction, 1),
+                'Diff': round(pick.diff_from_line, 1),
+                'Edge %': round(pick.edge_pct, 1),
+                'Pick': pick.recommendation,
+                'Confidence': pick.confidence,
+                'Hit Rate': f"{pick.recent_hit_rate*100:.0f}%",
+                'Trend': pick.trend
+            })
+
+        df = pd.DataFrame(table_data)
+
+        # Style the dataframe
+        def highlight_pick(val):
+            if val == 'OVER':
+                return 'background-color: #d4edda; color: #155724'
+            elif val == 'UNDER':
+                return 'background-color: #f8d7da; color: #721c24'
+            return ''
+
+        def highlight_confidence(val):
+            if val == 'strong':
+                return 'background-color: #28a745; color: white'
+            elif val == 'moderate':
+                return 'background-color: #ffc107; color: black'
+            return ''
+
+        styled_df = df.style.applymap(highlight_pick, subset=['Pick']).applymap(highlight_confidence, subset=['Confidence'])
+        st.dataframe(styled_df, use_container_width=True, height=400)
+
+        # Parlay builder
+        st.markdown("---")
+        st.subheader("🎲 Suggested Parlay")
+
+        parlay_legs = st.slider("Number of legs", 2, 5, 3)
+
+        parlay_picks, parlay_prob = analyzer.build_parlay(props, legs=parlay_legs)
+
+        if parlay_picks:
+            st.markdown(f"**Combined Probability: {parlay_prob*100:.1f}%**")
+
+            for i, pick in enumerate(parlay_picks, 1):
+                col1, col2, col3 = st.columns([1, 3, 2])
+                with col1:
+                    st.markdown(f"### Leg {i}")
+                with col2:
+                    st.markdown(f"**{pick.player_name}**")
+                    st.caption(f"{pick.prop_type.upper()}")
+                with col3:
+                    rec_color = "#28a745" if pick.recommendation == 'OVER' else "#dc3545"
+                    st.markdown(f"""
+                    <span style="background: {rec_color}; color: white; padding: 5px 15px; border-radius: 5px; font-weight: bold;">
+                        {pick.recommendation} {pick.line}
+                    </span>
+                    <span style="margin-left: 10px;">Edge: {pick.edge_pct:.1f}%</span>
+                    """, unsafe_allow_html=True)
+
+
+def single_player_page():
+    """Single player analysis page (original functionality)."""
+    st.title("🏀 Single Player Analysis")
+    st.markdown("*Deep dive into a single player's props*")
+
+    predictor, models_loaded = load_predictor()
+
+    # Sidebar inputs
     with st.sidebar:
         st.header("Settings")
 
@@ -743,6 +954,23 @@ def main():
 
     elif not player_name and analyze_button:
         st.warning("Please enter a player name")
+
+
+def main():
+    """Main app with page navigation."""
+
+    # Sidebar navigation
+    st.sidebar.title("Navigation")
+    page = st.sidebar.radio(
+        "Select Page",
+        ["🎯 PrizePicks Analyzer", "🏀 Single Player"],
+        index=0
+    )
+
+    if page == "🎯 PrizePicks Analyzer":
+        prizepicks_page()
+    else:
+        single_player_page()
 
     # Footer
     st.markdown("---")

@@ -135,6 +135,8 @@ class EnsembleModel:
         if self.use_xgboost:
             try:
                 from xgboost import XGBRegressor
+                # Test that XGBoost actually works (not just importable)
+                test_model = XGBRegressor(n_estimators=1)
                 models.append(('xgb', XGBRegressor(
                     n_estimators=200,
                     max_depth=6,
@@ -144,7 +146,9 @@ class EnsembleModel:
                     random_state=42,
                     n_jobs=-1
                 )))
-            except ImportError:
+            except (ImportError, Exception) as e:
+                # XGBoost not available or broken (e.g., missing libomp)
+                print(f"  Note: XGBoost unavailable ({type(e).__name__}), using other models")
                 pass
 
         return models
@@ -315,6 +319,8 @@ class ModelTrainer:
         elif self.model_type == 'xgboost':
             try:
                 from xgboost import XGBRegressor
+                # Test that XGBoost actually works
+                test_model = XGBRegressor(n_estimators=1)
                 return XGBRegressor(
                     n_estimators=200,
                     max_depth=6,
@@ -324,8 +330,8 @@ class ModelTrainer:
                     random_state=42,
                     n_jobs=-1
                 )
-            except ImportError:
-                print("XGBoost not installed, falling back to Gradient Boosting")
+            except (ImportError, Exception) as e:
+                print(f"XGBoost not available ({type(e).__name__}), falling back to Gradient Boosting")
                 return GradientBoostingRegressor(
                     n_estimators=150,
                     max_depth=5,
